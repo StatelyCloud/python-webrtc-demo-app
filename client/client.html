@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Multi-Peer WebRTC Call</title>
+  </head>
+  <body
+    style="
+      display: flex;
+      align-items: center;
+      width: 100%;
+      flex-direction: column;
+    "
+  >
+    <div style="display: flex; flex-direction: column; width: 50%">
+      <h2 style="flex: 1">Join a WebRTC Call</h2>
+      <input id="room" placeholder="Room ID" />
+      <input id="username" placeholder="Username" />
+    </div>
+    <div style="display: flex; flex-direction: column; width: 50%">
+      <button onclick="startCall()">Join Call</button>
+      <button onclick="toggleAudio()">Mute/Unmute Audio</button>
+      <button onclick="toggleVideo()">Mute/Unmute Video</button>
+    </div>
+    <video id="localVideo" autoplay muted></video>
+    <div id="remoteVideos"></div>
+
+    <script>
+      const STUN_HOSTS =
+        "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_hosts.txt";
+
+      const ws = new WebSocket("ws://localhost:8765"); // Connect to WebSocket server
+      const peerConnections = new Map(); // Store peer connections
+      let localStream;
+      let makingOffer = false;
+      const iceServers = fetch(STUN_HOSTS)
+        .then((resp) => resp.text())
+        .then((text) => text.trim().split("\n"));
+
+      ws.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+        const { type, username, room, description, candidate } = data;
+
+        if (
+          type === "user_joined" &&
+          username !== document.getElementById("username").value
+        ) {
+          createPeerConnection(username);
+        } else if (type === "user_left") {
+          removeRemoteVideo(username);
+        } else if (type === "sdp") {
+          handleSignalingMessage(data);
+        }
+      };
+
+      async function startCall() {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        document.getElementById("localVideo").srcObject = localStream;
+        const room = document.getElementById("room").value;
+        const username = document.getElementById("username").value;
+        ws.send(JSON.stringify({ type: "join", room, username }));
+      }
+
+      async function createPeerConnection(peerId) {
+        console.log("Creating peer connection for ", peerId);
+
+        const config = {
+          iceServers: (await iceServers).map((i) => {
+            return {
+              urls: `stun:${i}`,
+            };
+          }),
+        };
+
+        const peerConnection = new RTCPeerConnection(config);
+        peerConnections.set(peerId, peerConnection);
+        console.log("Created peer connection for ", peerId);
+
+        localStream
+          .getTracks()
+          .forEach((track) => peerConnection.addTrack(track, localStream));
+
+        peerConnection.onnegotiationneeded = async () => {
+          try {
+            makingOffer = true;
+            await peerConnection.setLocalDescription();
+            ws.send(
+              JSON.stringify({
+                type: "sdp",
+                room: document.getElementById("room").value,
+                description: peerConnection.localDescription,
+                to: peerId,
+              })
+            );
+          } catch (err) {
+            console.error(err);
+          } finally {
+            makingOffer = false;
+          }
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            ws.send(
+              JSON.stringify({
+                type: "sdp",
+                room: document.getElementById("room").value,
+                candidate: event.candidate,
+                to: peerId,
+              })
+            );
+          }
+        };
+
+        peerConnection.ontrack = (event) => {
+          console.log("Got remote track", event.streams[0]);
+          const remoteVideo = addRemoteVideo(peerId);
+          remoteVideo.srcObject = event.streams[0];
+        };
+        return peerConnection;
+      }
+
+      async function handleSignalingMessage(data) {
+        console.log("got signaling message", data);
+        const { from, description, candidate, polite } = data;
+        console.log(polite);
+        let peerConnection = peerConnections.get(from);
+        console.log(peerConnection);
+        console.log(peerConnections);
+        if (!peerConnection) {
+          peerConnection = await createPeerConnection(from);
+        }
+        console.log(peerConnections);
+
+        if (description) {
+          const offerCollision =
+            description.type === "offer" &&
+            (makingOffer || peerConnection.signalingState !== "stable");
+
+          ignoreOffer = !polite && offerCollision;
+          if (ignoreOffer) {
+            console.log("Ignoring offer");
+            return;
+          }
+
+          await peerConnection.setRemoteDescription(description);
+          if (description.type === "offer") {
+            await peerConnection.setLocalDescription();
+            ws.send(
+              JSON.stringify({
+                type: "sdp",
+                room: document.getElementById("room").value,
+                description: peerConnection.localDescription,
+                to: from,
+              })
+            );
+          }
+        } else if (candidate) {
+          await peerConnection.addIceCandidate(candidate);
+        }
+      }
+
+      function addRemoteVideo(peerId) {
+        const remoteVideos = document.getElementById("remoteVideos");
+        let videoElement = document.createElement("video");
+        videoElement.id = "remoteVideo_" + peerId;
+        videoElement.autoplay = true;
+        remoteVideos.appendChild(videoElement);
+        return videoElement;
+      }
+
+      function removeRemoteVideo(peerId) {
+        const videoElement = document.getElementById("remoteVideo_" + peerId);
+        if (videoElement) {
+          videoElement.parentNode.removeChild(videoElement);
+        }
+        peerConnections.delete(peerId);
+        console.log("Removed remote video for ", peerId);
+      }
+
+      function toggleAudio() {
+        if (localStream) {
+          const audioTrack = localStream.getAudioTracks()[0];
+          if (audioTrack) {
+            audioTrack.enabled = !audioTrack.enabled;
+            console.log("Audio " + (audioTrack.enabled ? "unmuted" : "muted"));
+          }
+        }
+      }
+
+      function toggleVideo() {
+        if (localStream) {
+          const videoTrack = localStream.getVideoTracks()[0];
+          if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled;
+            console.log("Video " + (videoTrack.enabled ? "unmuted" : "muted"));
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

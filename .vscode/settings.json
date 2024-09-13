@@ -1,0 +1,13 @@
+{
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.tabSize": 4
+  },
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "editor.formatOnSave": true,
+  "python.defaultInterpreterPath": "server/.venv/bin/python",
+  "ruff.importStrategy": "useBundled",
+  "python.analysis.typeCheckingMode": "strict"
+}

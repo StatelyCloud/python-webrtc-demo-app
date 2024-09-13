@@ -1,0 +1,14 @@
+[project]
+name = "python-webrtc-demo-app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13.0.1",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.6.4",
+]
