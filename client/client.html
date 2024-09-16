@@ -2,33 +2,76 @@
 <html>
   <head>
     <title>Multi-Peer WebRTC Call</title>
+    <style>
+      body {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        flex-direction: column;
+        text-align: center;
+      }
+
+      .control-box {
+        display: flex;
+        flex-direction: row;
+        width: 50%;
+      }
+
+      .control-box > * {
+        margin: 10px;
+      }
+
+      button {
+        align-self: center;
+        padding: 10px;
+      }
+
+      .remote-video-box {
+        display: flex;
+        overflow-x: auto;
+        white-space: nowrap;
+        height: 50vh;
+        width: 100%;
+        justify-content: center;
+      }
+
+      .remote-video {
+        height: 100%;
+        flex-shrink: 0;
+        padding: 20px;
+      }
+
+      .local-video {
+        display: none;
+        position: absolute;
+        height: 100px;
+        top: 0;
+        left: 0;
+        border: 1px solid red;
+        box-shadow: 0 0 10px 5px rgba(0, 0, 0, 0.5);
+      }
+
+      .video-box {
+        width: 100%;
+        position: relative;
+      }
+    </style>
   </head>
-  <body
-    style="
-      display: flex;
-      align-items: center;
-      width: 100%;
-      flex-direction: column;
-    "
-  >
-    <div style="display: flex; flex-direction: column; width: 50%">
-      <h2 style="flex: 1">Join a WebRTC Call</h2>
+  <body>
+    <h2>Join a WebRTC Call</h2>
+    <div class="control-box">
       <input id="room" placeholder="Room ID" />
       <input id="username" placeholder="Username" />
-    </div>
-    <div style="display: flex; flex-direction: column; width: 50%">
       <button onclick="startCall()">Join Call</button>
-      <button onclick="toggleAudio()">Mute/Unmute Audio</button>
-      <button onclick="toggleVideo()">Mute/Unmute Video</button>
     </div>
-    <video id="localVideo" autoplay muted></video>
-    <div id="remoteVideos"></div>
-
+    <div class="video-box">
+      <video id="localVideo" autoplay muted class="local-video"></video>
+      <div id="remoteVideos" class="remote-video-box"></div>
+    </div>
     <script>
       const STUN_HOSTS =
         "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_hosts.txt";
 
-      const ws = new WebSocket("ws://localhost:8765"); // Connect to WebSocket server
       const peerConnections = new Map(); // Store peer connections
       let localStream;
       let makingOffer = false;
@@ -36,20 +79,18 @@
         .then((resp) => resp.text())
         .then((text) => text.trim().split("\n"));
 
-      ws.onmessage = async (event) => {
-        const data = JSON.parse(event.data);
-        const { type, username, room, description, candidate } = data;
-
-        if (
-          type === "user_joined" &&
-          username !== document.getElementById("username").value
-        ) {
-          createPeerConnection(username);
-        } else if (type === "user_left") {
-          removeRemoteVideo(username);
-        } else if (type === "sdp") {
-          handleSignalingMessage(data);
-        }
+      const ws = new WebSocket("ws://localhost:8765");
+      ws.onclose = function () {
+        console.log("Disconnected from signaling server");
+      };
+      ws.onopen = function () {
+        console.log("Connected to signaling server");
+        setInterval(() => {
+          // set a keepalive for the socket
+          // todo - set up all other websocket listeners in here once
+          // we are guaranteed that the socket is open
+          ws.send(JSON.stringify({ type: "ping" }));
+        }, 2000);
       };
 
       async function startCall() {
@@ -57,13 +98,32 @@
           video: true,
           audio: true,
         });
-        document.getElementById("localVideo").srcObject = localStream;
+        videoElement = document.getElementById("localVideo");
+        videoElement.srcObject = localStream;
+        videoElement.style.display = "block";
         const room = document.getElementById("room").value;
         const username = document.getElementById("username").value;
         ws.send(JSON.stringify({ type: "join", room, username }));
       }
 
+      ws.onmessage = async function handleWebsocketMessage(event) {
+        const data = JSON.parse(event.data);
+        const { type, username, room, description, candidate } = data;
+
+        if (
+          type === "user_joined" &&
+          username !== document.getElementById("username").value
+        ) {
+          createPeerConnection(username, this);
+        } else if (type === "user_left") {
+          removeRemoteVideo(username);
+        } else if (type === "sdp") {
+          handleSignalingMessage(data, this);
+        }
+      };
+
       async function createPeerConnection(peerId) {
+        console.log(ws);
         console.log("Creating peer connection for ", peerId);
 
         const config = {
@@ -76,7 +136,6 @@
 
         const peerConnection = new RTCPeerConnection(config);
         peerConnections.set(peerId, peerConnection);
-        console.log("Created peer connection for ", peerId);
 
         localStream
           .getTracks()
@@ -115,24 +174,18 @@
         };
 
         peerConnection.ontrack = (event) => {
-          console.log("Got remote track", event.streams[0]);
-          const remoteVideo = addRemoteVideo(peerId);
-          remoteVideo.srcObject = event.streams[0];
+          addRemoteVideo(peerId, event);
         };
         return peerConnection;
       }
 
       async function handleSignalingMessage(data) {
-        console.log("got signaling message", data);
         const { from, description, candidate, polite } = data;
-        console.log(polite);
+
         let peerConnection = peerConnections.get(from);
-        console.log(peerConnection);
-        console.log(peerConnections);
         if (!peerConnection) {
           peerConnection = await createPeerConnection(from);
         }
-        console.log(peerConnections);
 
         if (description) {
           const offerCollision =
@@ -162,13 +215,18 @@
         }
       }
 
-      function addRemoteVideo(peerId) {
+      function addRemoteVideo(peerId, event) {
         const remoteVideos = document.getElementById("remoteVideos");
-        let videoElement = document.createElement("video");
-        videoElement.id = "remoteVideo_" + peerId;
-        videoElement.autoplay = true;
-        remoteVideos.appendChild(videoElement);
-        return videoElement;
+        let videoElement = document.getElementById("remoteVideo_" + peerId);
+        if (!videoElement) {
+          videoElement = document.createElement("video");
+          videoElement.id = "remoteVideo_" + peerId;
+          videoElement.className = "remote-video";
+          videoElement.autoplay = true;
+          remoteVideos.appendChild(videoElement);
+        }
+        const mediaStream = new MediaStream();
+        videoElement.srcObject = event.streams[0];
       }
 
       function removeRemoteVideo(peerId) {
@@ -178,26 +236,6 @@
         }
         peerConnections.delete(peerId);
         console.log("Removed remote video for ", peerId);
-      }
-
-      function toggleAudio() {
-        if (localStream) {
-          const audioTrack = localStream.getAudioTracks()[0];
-          if (audioTrack) {
-            audioTrack.enabled = !audioTrack.enabled;
-            console.log("Audio " + (audioTrack.enabled ? "unmuted" : "muted"));
-          }
-        }
-      }
-
-      function toggleVideo() {
-        if (localStream) {
-          const videoTrack = localStream.getVideoTracks()[0];
-          if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled;
-            console.log("Video " + (videoTrack.enabled ? "unmuted" : "muted"));
-          }
-        }
       }
     </script>
   </body>
