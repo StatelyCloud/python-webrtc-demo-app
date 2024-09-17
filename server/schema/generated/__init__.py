@@ -3,14 +3,10 @@
 # ruff: noqa
 
 from .stately_item_types import Client
-from .stately_item_types import SignalingMessageType
 from .stately_item_types import Participant
-from .stately_item_types import SignalingMessage
 
 
 __all__ = [
     "Client",
-    "SignalingMessageType",
     "Participant",
-    "SignalingMessage",
 ]

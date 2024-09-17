@@ -24,17 +24,13 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cschema.proto\x12\x11stately.generated\"u\n\x0bParticipant\x12\x1a\n\x08username\x18\x01 \x01(\tR\x08username\x12\x12\n\x04room\x18\x02 \x01(\tR\x04room\x12\x16\n\x06joined\x18\x03 \x01(\x12R\x06joined\x12\x1e\n\nsession_id\x18\x04 \x01(\x0cR\nsession_id\"\xd7\x01\n\x10SignalingMessage\x12\x1e\n\nmessage_id\x18\x01 \x01(\x04R\nmessage_id\x12K\n\x0cmessage_type\x18\x02 \x01(\x0e\x32\'.stately.generated.SignalingMessageTypeR\x0cmessage_type\x12\x12\n\x04room\x18\x03 \x01(\tR\x04room\x12\x1e\n\ncreated_at\x18\x04 \x01(\x12R\ncreated_at\x12\"\n\x0cpayload_json\x18\x05 \x01(\tR\x0cpayload_json*\x99\x01\n\x14SignalingMessageType\x12$\n SignalingMessageType_UNSPECIFIED\x10\x00\x12\x1d\n\x19SignalingMessageType_Join\x10\x01\x12\x1e\n\x1aSignalingMessageType_Leave\x10\x02\x12\x1c\n\x18SignalingMessageType_SDP\x10\x03\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cschema.proto\x12\x11stately.generated\"\x97\x01\n\x0bParticipant\x12\x1a\n\x08username\x18\x01 \x01(\tR\x08username\x12\x12\n\x04room\x18\x02 \x01(\tR\x04room\x12\x16\n\x06joined\x18\x03 \x01(\x12R\x06joined\x12\x1e\n\nsession_id\x18\x04 \x01(\x0cR\nsession_id\x12 \n\x0bpending_sdp\x18\x05 \x03(\tR\x0bpending_sdpb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'schema_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_SIGNALINGMESSAGETYPE']._serialized_start=373
-  _globals['_SIGNALINGMESSAGETYPE']._serialized_end=526
-  _globals['_PARTICIPANT']._serialized_start=35
-  _globals['_PARTICIPANT']._serialized_end=152
-  _globals['_SIGNALINGMESSAGE']._serialized_start=155
-  _globals['_SIGNALINGMESSAGE']._serialized_end=370
+  _globals['_PARTICIPANT']._serialized_start=36
+  _globals['_PARTICIPANT']._serialized_end=187
 # @@protoc_insertion_point(module_scope)

@@ -1,10 +1,9 @@
 import {
-  enumType,
   itemType,
   string,
   timestampMicroseconds,
-  uint,
   uuid,
+  arrayOf,
 } from "@stately-cloud/schema";
 
 export const Participant = itemType("Participant", {
@@ -27,40 +26,10 @@ export const Participant = itemType("Participant", {
       type: uuid,
       fieldNum: 4,
     },
-  },
-});
-
-export const SignalingMessageType = enumType("SignalingMessageType", {
-  Join: 1,
-  Leave: 2,
-  SDP: 3,
-});
-
-export const SignalingMessage = itemType("SignalingMessage", {
-  keyPath: ["/Room-:room/SignalingMessage-:message_id"],
-  fields: {
-    message_id: {
-      type: uint,
-      fieldNum: 1,
-      initialValue: "sequence",
-    },
-    message_type: {
-      type: SignalingMessageType,
-      fieldNum: 2,
-    },
-    room: {
-      type: string,
-      required: true,
-      fieldNum: 3,
-    },
-    created_at: {
-      type: timestampMicroseconds,
-      fieldNum: 4,
-      fromMetadata: "createdAtTime",
-    },
-    payload_json: {
-      type: string,
+    pending_sdp: {
+      type: arrayOf(string),
       fieldNum: 5,
+      required: false,
     },
   },
 });

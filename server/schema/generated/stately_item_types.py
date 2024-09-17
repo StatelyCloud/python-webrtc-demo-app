@@ -61,15 +61,6 @@ class Client(SDKClient):
         )
 
 
-class SignalingMessageType(Enum):
-    """Generated SignalingMessageType enum."""
-
-    SignalingMessageType_UNSPECIFIED = 0
-    SignalingMessageType_Join = 1
-    SignalingMessageType_Leave = 2
-    SignalingMessageType_SDP = 3
-
-
 
 class Participant(StatelyItem):
     """Generated Participant object."""
@@ -78,6 +69,7 @@ class Participant(StatelyItem):
     room: str
     _joined: int
     session_id: UUID
+    pending_sdp: list[str]
 
     def __init__(
         self,
@@ -85,12 +77,14 @@ class Participant(StatelyItem):
         username: str,
         room: str,
         session_id: UUID,
+        pending_sdp: list[str] = [],
     ) -> None:
         """Create a new Participant."""
         self.username = username
         self.room = room
         self._joined = 0
         self.session_id = session_id
+        self.pending_sdp = pending_sdp
 
     def key_path(self) -> str:
         """
@@ -123,6 +117,7 @@ class Participant(StatelyItem):
         o.room = self.room
         o.joined = self.joined
         o.session_id = self.session_id.bytes
+        o.pending_sdp.extend(self.pending_sdp)
         return PBItem(
             proto=o.SerializeToString(),
             item_type=self.item_type(),
@@ -148,96 +143,9 @@ class Participant(StatelyItem):
             username=pb.username,
             room=pb.room,
             session_id=UUID(bytes=pb.session_id),
+            pending_sdp=list(pb.pending_sdp),
         )
         o._joined = pb.joined  # noqa: SLF001
-
-        return o
-
-
-class SignalingMessage(StatelyItem):
-    """Generated SignalingMessage object."""
-
-    message_id: int
-    message_type: SignalingMessageType
-    room: str
-    _created_at: int
-    payload_json: str
-
-    def __init__(
-        self,
-        *,
-        message_id: int,
-        message_type: SignalingMessageType,
-        room: str,
-        payload_json: str,
-    ) -> None:
-        """Create a new SignalingMessage."""
-        self.message_id = message_id
-        self.message_type = message_type
-        self.room = room
-        self._created_at = 0
-        self.payload_json = payload_json
-
-    def key_path(self) -> str:
-        """
-        Returns the key_path of the current
-        SignalingMessage.
-        """
-        return key_path(
-            "/Room-{room}/SignalingMessage-{message_id}",
-            room=self.room,
-            message_id=self.message_id,
-        )
-
-    @property
-    def created_at(self) -> int:
-        """Get the created_at readonly field."""
-        return self._created_at
-
-    @staticmethod
-    def item_type() -> str:
-        """
-        Returns the item type of SignalingMessage
-        as a string.
-        """
-        return "SignalingMessage"
-
-    def marshal(self) -> PBItem:
-        """Marshal a SignalingMessage into a PBItem."""
-        o = schema_pb2.SignalingMessage()
-        o.message_id = self.message_id
-        o.message_type = self.message_type.value  # type: ignore[reportAttributeAccessIssue] # https://github.com/protocolbuffers/protobuf/issues/9765
-        o.room = self.room
-        o.created_at = self.created_at
-        o.payload_json = self.payload_json
-        return PBItem(
-            proto=o.SerializeToString(),
-            item_type=self.item_type(),
-        )
-
-    def __eq__(self, other: object) -> bool:
-        """
-        Enables use of the `==` operator to compare
-        SignalingMessage instances.
-        """
-        if not isinstance(other, self.__class__):
-            return False
-        return self.__dict__ == other.__dict__
-
-    @staticmethod
-    def unmarshal(proto_bytes: bytes) -> SignalingMessage:
-        """
-        Unmarshal schema_pb2.SignalingMessage
-        bytes into a new SignalingMessage.
-        """
-        pb = schema_pb2.SignalingMessage.FromString(proto_bytes)
-        o = SignalingMessage(
-            message_id=pb.message_id,
-            message_type=SignalingMessageType(pb.message_type),
-            room=pb.room,
-            payload_json=pb.payload_json,
-        )
-        o._created_at = pb.created_at  # noqa: SLF001
 
         return o
 
@@ -253,8 +161,6 @@ class TypeMapper(BaseTypeMapper):
         """Unmarshal a PBItem into a Schema specific type."""
         if item.item_type == "Participant":
             return Participant.unmarshal(item.proto)
-        if item.item_type == "SignalingMessage":
-            return SignalingMessage.unmarshal(item.proto)
 
         msg = f"Unknown item type: {item.item_type}"
         raise ValueError(msg)
