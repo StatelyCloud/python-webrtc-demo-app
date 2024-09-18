@@ -100,6 +100,8 @@
               removeRemoteVideo(username);
             } else if (type === "sdp") {
               handleSignalingMessage(data, this);
+            } else {
+              console.log("Unknown message type", data);
             }
           };
           ws.onopen = function () {
@@ -110,7 +112,7 @@
               // todo - set up all other websocket listeners in here once
               // we are guaranteed that the socket is open
               ws.send(JSON.stringify({ type: "ping" }));
-            }, 2000);
+            }, 1000);
           };
         });
       }
@@ -187,6 +189,7 @@
       }
 
       async function handleSignalingMessage(data) {
+        console.log("got signaling messasge");
         const { from, description, candidate, polite } = data;
 
         let peerConnection = peerConnections.get(from);
@@ -200,6 +203,7 @@
             (makingOffer || peerConnection.signalingState !== "stable");
 
           ignoreOffer = !polite && offerCollision;
+
           if (ignoreOffer) {
             console.log("Ignoring offer");
             return;

@@ -42,17 +42,17 @@ connections: dict[str, ServerConnection] = {}
 subscribed_rooms: dict[str, dict[str, Participant]] = {}
 
 
-async def broadcast(room: str, message: Any):
+async def broadcast(room: str, message: str):
     for user in subscribed_rooms[room].values():
         await send_to(user, message)
 
 
-async def send_to(recipient: Participant, message: Any):
+async def send_to(recipient: Participant, message: str):
     print(f"Sending message to {recipient.username}-{recipient.session_id}")
     connection = connections.get(f"{recipient.username}-{recipient.session_id}", None)
     if connection is not None:
         try:
-            await connection.send(json.dumps(message))
+            await connection.send(message)
         except ConnectionClosedOK:
             print(
                 f"Connection to {recipient.username}-{recipient.session_id} closed. Removing user"
@@ -129,7 +129,7 @@ async def remove_user(room: str, username: str, session_id: uuid.UUID):
 
 
 async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
-    recipient = msg["to"]
+    recipient_id = msg["to"]
     del msg["to"]
     msg["from"] = username
 
@@ -142,7 +142,7 @@ async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
                     Participant, key_path(f"/Room-{room}/Participant-{username}")
                 )
                 recipient = await txn.get(
-                    Participant, key_path(f"/Room-{room}/Participant-{recipient}")
+                    Participant, key_path(f"/Room-{room}/Participant-{recipient_id}")
                 )
                 if sender is None or recipient is None:
                     print(
@@ -198,7 +198,7 @@ async def handler(websocket: ServerConnection) -> None:
         print(f"User {username} disconnected")
     except Exception as e:
         print(f"Error for user {username}: {e}")
-        print(traceback.format_exc())
+        # print(traceback.format_exc())
     finally:
         await remove_user(room, username, session_id)
 
@@ -221,7 +221,10 @@ async def subscribe_room(room: str, token: ListToken) -> None:
                 if old is None:
                     # user added to room. we need to to notify everyone else
                     await broadcast(
-                        room, {"type": "user_joined", "username": current.username}
+                        room,
+                        json.dumps(
+                            {"type": "user_joined", "username": current.username}
+                        ),
                     )
                 elif current.session_id != old.session_id:
                     # if the session id is different, we need to close the old connection
@@ -235,6 +238,7 @@ async def subscribe_room(room: str, token: ListToken) -> None:
                     # if they are connected to us.
                     if f"{current.username}-{current.session_id}" in connections:
                         # TODO: do this in a txn
+                        print(f"sending pending sdp to {current.username}")
                         for sdp in current.pending_sdp:
                             await send_to(current, sdp)
                         current.pending_sdp = []
@@ -250,7 +254,8 @@ async def subscribe_room(room: str, token: ListToken) -> None:
                 )
                 del subscribed_rooms[room][deleted_username]
                 await broadcast(
-                    room, {"type": "user_left", "username": deleted_username}
+                    room,
+                    json.dumps({"type": "user_left", "username": deleted_username}),
                 )
 
             elif isinstance(item, SyncReset):
@@ -259,8 +264,10 @@ async def subscribe_room(room: str, token: ListToken) -> None:
         if sync_resp.token is None:
             raise Exception("Sync token is None")
         token = sync_resp.token
-        print(f"Syncing room {room} success. Current state: {subscribed_rooms[room]}")
-        await asyncio.sleep(2)
+        print(
+            f"Syncing room {room} success. Current users: {subscribed_rooms[room].keys()}. Current states: {[x.__dict__ for x in subscribed_rooms[room].values()]}"
+        )
+        await asyncio.sleep(0.5)
 
 
 async def main():
