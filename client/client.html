@@ -120,13 +120,6 @@
           ws.onopen = function () {
             console.log("Connected to signaling server");
             resolve();
-            // setInterval(() => {
-            //   // set a keepalive for the socket
-            //   // todo - set up all other websocket listeners in here once
-            //   // we are guaranteed that the socket is open
-            //   // ws can be closed before onopen fires
-            //   ws?.send(JSON.stringify({ type: "ping" }));
-            // }, 1000);
           };
         });
       }
