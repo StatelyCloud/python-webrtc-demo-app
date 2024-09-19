@@ -1,0 +1,10 @@
+{
+  "name": "schema",
+  "description": "Stately schema boilerplate generated with `stately schema init`",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@stately-cloud/schema": "^0.1.0"
+  }
+}

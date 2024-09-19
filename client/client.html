@@ -30,9 +30,9 @@
         display: flex;
         overflow-x: auto;
         white-space: nowrap;
-        height: 50vh;
+        height: 50%;
+        max-height: 300px;
         width: 100%;
-        justify-content: center;
       }
 
       .remote-video {
@@ -62,7 +62,7 @@
     <div class="control-box">
       <input id="room" placeholder="Room ID" />
       <input id="username" placeholder="Username" />
-      <button onclick="startCall()">Join Call</button>
+      <button id="toggle-call" onclick="toggleCall()">Join Call</button>
     </div>
     <div class="video-box">
       <video id="localVideo" autoplay muted class="local-video"></video>
@@ -74,26 +74,84 @@
 
       const peerConnections = new Map(); // Store peer connections
       let localStream;
+      let activeCall = false;
       let makingOffer = false;
       const iceServers = fetch(STUN_HOSTS)
         .then((resp) => resp.text())
         .then((text) => text.trim().split("\n"));
+      let ws = null;
 
-      const ws = new WebSocket("ws://localhost:8765");
-      ws.onclose = function () {
-        console.log("Disconnected from signaling server");
-      };
-      ws.onopen = function () {
-        console.log("Connected to signaling server");
-        setInterval(() => {
-          // set a keepalive for the socket
-          // todo - set up all other websocket listeners in here once
-          // we are guaranteed that the socket is open
-          ws.send(JSON.stringify({ type: "ping" }));
-        }, 2000);
-      };
+      function shuffleArray(array) {
+        for (var i = array.length - 1; i >= 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var temp = array[i];
+          array[i] = array[j];
+          array[j] = temp;
+        }
+        return array;
+      }
 
-      async function startCall() {
+      function resetWebSocket() {
+        ws?.close();
+        return new Promise((resolve, reject) => {
+          ws = new WebSocket("ws://localhost:8765");
+          ws.onclose = function () {
+            console.log("Disconnected from signaling server");
+            leaveCall();
+          };
+          ws.onmessage = async function handleWebsocketMessage(event) {
+            const data = JSON.parse(event.data);
+            const { type, username, room, description, candidate } = data;
+
+            if (
+              type === "joined" &&
+              username !== document.getElementById("username").value
+            ) {
+              createPeerConnection(username, this);
+            } else if (type === "joined") {
+              // ignore the message if it's from us
+            } else if (type === "left") {
+              removeRemoteVideo(username);
+            } else if (type === "sdp") {
+              handleSignalingMessage(data, this);
+            } else {
+              console.log("Unknown message type", data);
+            }
+          };
+          ws.onopen = function () {
+            console.log("Connected to signaling server");
+            resolve();
+          };
+        });
+      }
+
+      async function toggleCall() {
+        if (!activeCall) {
+          joinCall();
+        } else {
+          leaveCall();
+        }
+      }
+
+      async function leaveCall() {
+        console.log("leaving call");
+        ws?.close();
+        ws = null;
+        activeCall = false;
+        videoElement = document.getElementById("localVideo");
+        videoElement.style.display = "none";
+        peerConnections.forEach((pc) => pc.close());
+        peerConnections.clear();
+        const remoteVideos = document.getElementById("remoteVideos");
+        // hacky way to clear the remote videos
+        remoteVideos.innerHTML = "";
+        document.getElementById("toggle-call").innerText = "Join Call";
+      }
+
+      async function joinCall() {
+        console.log("Joining call");
+        activeCall = true;
+        document.getElementById("toggle-call").innerText = "Leave Call";
         localStream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
@@ -103,35 +161,19 @@
         videoElement.style.display = "block";
         const room = document.getElementById("room").value;
         const username = document.getElementById("username").value;
+        await resetWebSocket();
         ws.send(JSON.stringify({ type: "join", room, username }));
       }
 
-      ws.onmessage = async function handleWebsocketMessage(event) {
-        const data = JSON.parse(event.data);
-        const { type, username, room, description, candidate } = data;
-
-        if (
-          type === "user_joined" &&
-          username !== document.getElementById("username").value
-        ) {
-          createPeerConnection(username, this);
-        } else if (type === "user_left") {
-          removeRemoteVideo(username);
-        } else if (type === "sdp") {
-          handleSignalingMessage(data, this);
-        }
-      };
-
       async function createPeerConnection(peerId) {
-        console.log(ws);
         console.log("Creating peer connection for ", peerId);
-
+        const servers = (await iceServers).map((i) => {
+          return {
+            urls: `stun:${i}`,
+          };
+        });
         const config = {
-          iceServers: (await iceServers).map((i) => {
-            return {
-              urls: `stun:${i}`,
-            };
-          }),
+          iceServers: shuffleArray(servers),
         };
 
         const peerConnection = new RTCPeerConnection(config);
@@ -162,7 +204,7 @@
 
         peerConnection.onicecandidate = (event) => {
           if (event.candidate) {
-            ws.send(
+            ws?.send(
               JSON.stringify({
                 type: "sdp",
                 room: document.getElementById("room").value,
@@ -180,6 +222,7 @@
       }
 
       async function handleSignalingMessage(data) {
+        console.log("got signaling message: ", data);
         const { from, description, candidate, polite } = data;
 
         let peerConnection = peerConnections.get(from);
@@ -193,6 +236,7 @@
             (makingOffer || peerConnection.signalingState !== "stable");
 
           ignoreOffer = !polite && offerCollision;
+
           if (ignoreOffer) {
             console.log("Ignoring offer");
             return;
@@ -211,7 +255,11 @@
             );
           }
         } else if (candidate) {
-          await peerConnection.addIceCandidate(candidate);
+          try {
+            await peerConnection.addIceCandidate(candidate);
+          } catch (err) {
+            console.log(err);
+          }
         }
       }
 
@@ -235,7 +283,6 @@
           videoElement.parentNode.removeChild(videoElement);
         }
         peerConnections.delete(peerId);
-        console.log("Removed remote video for ", peerId);
       }
     </script>
   </body>
