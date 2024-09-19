@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""
+This is a simple signaling server for WebRTC. It uses StatelyDB to store the state of the rooms and participants.
+
+TODO: add a heartbeat and TTL to handle zombie connections
+that can arise from the server dying unexpectedly before we can
+emove the participant from the room.
+"""
 
 import asyncio
 import json
@@ -28,21 +35,23 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
 
-load_dotenv(dotenv_path=".env.local")
+load_dotenv(dotenv_path=".env")
 
-# TODO: add a heartbeat and TTL to handle zombie connections
-# that can arise from the server dying unexpectedly before we can
-# remove the participant from the room.
+# the client automatically loads STATELY_CLIENT_ID and STATELY_CLIENT_SECRET from the environment
 client = Client(
     store_id=int(os.environ["STORE_ID"]),
 )
 
-# keys of the form <username>-<session-id>
+# Create some maps to store websocket connections and the room state
+# we are syncing from StatelyDB
 connections: dict[str, ServerConnection] = {}
 subscribed_rooms: dict[str, dict[str, Participant]] = {}
 
 
 async def broadcast(room: str, message: str):
+    """
+    Send the message to all connected users in the room
+    """
     if room not in subscribed_rooms:
         # the room has been removed before the broadcast could happen
         print("received broadcast for room that doesn't exist. skipping")
@@ -53,6 +62,10 @@ async def broadcast(room: str, message: str):
 
 
 async def send_to(recipient: Participant, message: str):
+    """
+    Send a message to a specific participant. If the participant is not connected to this instance, do nothing.
+    If the participant websocket is closed then it is removed.
+    """
     print(f"Sending message to {recipient.username}")
     connection = connections.get(f"{recipient.username}-{recipient.session_id}", None)
     if connection is not None:
@@ -80,7 +93,12 @@ async def send_to(recipient: Participant, message: str):
 
 
 async def load_room(room: str) -> ListToken:
-    # build the initial state and return a sync token
+    """
+    Load a the full room state from StatelyDB and return a ListToken
+    which can be used for periodic syncing.
+    """
+
+    # default limit of 0 will exhaust the entire list
     list_resp = await client.begin_list(
         key_path_prefix=key_path("/Room-{room}", room=room)
     )
@@ -99,6 +117,11 @@ async def load_room(room: str) -> ListToken:
 async def add_local_participant(
     room: str, username: str, connection: ServerConnection, session_id: uuid.UUID
 ):
+    """
+    Add a local participant to the StatelyDB room and to the local state.
+    This will also subscribe to the room if the server
+    isn't already subscribed.
+    """
     print(f"Adding participant {username} to room {room}")
     # add the connection to the connections dict
     connections[f"{username}-{session_id}"] = connection
@@ -127,6 +150,9 @@ async def add_local_participant(
 
 
 async def remove_local_participant(room: str, username: str, session_id: uuid.UUID):
+    """
+    Remove a participant from the room. This will also remove the participant from the room in StatelyDB
+    """
     print(f"Removing participant: {username} from room {room}")
     # we don't need to update the local room state because the subscriber will handle that
     await client.delete(key_path(f"/Room-{room}/Participant-{username}"))
@@ -134,12 +160,25 @@ async def remove_local_participant(room: str, username: str, session_id: uuid.UU
 
 
 async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
+    """
+    Handle incoming SDP messages. This swaps the to/from fields and also determines which participant is the
+    "polite" peer. For more info on SDP or WebRTC negotiation see:
+    https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
+
+    The pending SDP messages are flushed to the recipients pending_sdp list in a StatelyDB transaction.
+    """
     recipient_id = msg["to"]
     del msg["to"]
     msg["from"] = username
+
+    # we only need the senders joined time to determine politeness
+    # so it doesn't need to be fetched in the transaction.
     sender = await client.get(
         Participant, key_path(f"/Room-{room}/Participant-{username}")
     )
+
+    # fetch recipient and update their pending_sdp in a transaction to ensure
+    # that the subscriber doesn't clear the queue between when we read and write.
     txn = None
     while txn is None or txn.result is None or not txn.result.committed:
         try:
@@ -153,6 +192,9 @@ async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
                         f"sender: {sender}, recipient: {recipient}. neither should be None"
                     )
                     return
+                # politeness is determined by who joined the room first
+                # the algo used to determine politeness is arbitrary but it
+                # must be consistent across all participants in the room.
                 msg["polite"] = sender.joined < recipient.joined
                 recipient.pending_sdp.append(json.dumps(msg))
                 await txn.put(recipient)
@@ -165,14 +207,18 @@ async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
 
 
 async def handler(websocket: ServerConnection) -> None:
-    # wait for the initial message
+    """
+    This handler is invoked for each new websocket connection.
+    """
+
+    # wait for the initial message from the participant
+    # this should be a join message
     try:
         initial_message_json = await websocket.recv()
     except ConnectionClosedOK:
         print("participant disconnected before sending initial message")
         return
 
-    # make sure we get a join message first
     initial_message = json.loads(initial_message_json)
 
     if initial_message["type"] != "join":
@@ -208,12 +254,22 @@ async def handler(websocket: ServerConnection) -> None:
 
 
 async def delete_connection(username: str, session_id: uuid.UUID):
+    """
+    Delete a websocket connection from the local state
+    """
     if f"{username}-{session_id}" in connections:
         await connections[f"{username}-{session_id}"].close()
         del connections[f"{username}-{session_id}"]
 
 
 async def handle_changed_remote_participant(room: str, updated: Participant):
+    """
+    Handle a new or updated participant in the room.
+    This also handles new SDP messages in the pending_sdp queue.
+
+    The participant state is synced to the local state and any pending SDP is broadcast
+    to the participant if the participant is connected to this instance.
+    """
     old = subscribed_rooms[room].get(updated.username, None)
     if old is None:
         # participant added to room. we need to to notify everyone else
@@ -256,11 +312,15 @@ async def handle_changed_remote_participant(room: str, updated: Participant):
                         await asyncio.sleep(random.uniform(1, 2))
                         continue
                     raise e
-    # regardless, we need to update the room state
+    # always update the participant in the local room state
     subscribed_rooms[room][updated.username] = updated
 
 
 async def handle_removed_remote_participant(room: str, username: str):
+    """
+    Handle a participant being removed from the room.
+    Removes the participant from the local state and broadcasts the removal to all connected participants.
+    """
     print(f"sync detected delete participant: {username}")
     del subscribed_rooms[room][username]
     await broadcast(
@@ -270,6 +330,10 @@ async def handle_removed_remote_participant(room: str, username: str):
 
 
 async def sync_room(room: str, token: ListToken) -> ListToken:
+    """
+    Performs a StatelyDB sync for the room.
+    This will fetch a list of new/updated participants, and removed participants.
+    """
     sync_resp = await client.sync_list(token)
     async for item in sync_resp:
         if isinstance(item, SyncChangedItem):
@@ -293,6 +357,9 @@ async def sync_room(room: str, token: ListToken) -> ListToken:
 
 
 async def subscribe_room(room: str, token: ListToken) -> None:
+    """
+    Subscribe to a room and periodically sync for state updates.
+    """
     print(f"Subscribing to room {room}")
     # now periodically sync for state updates
     while token.can_sync:
@@ -305,6 +372,8 @@ async def subscribe_room(room: str, token: ListToken) -> None:
             del subscribed_rooms[room]
             return
         # wait 1 sec then loop again
+        # this sleep is arbitrary but I've found that the application
+        # seems to work the best with a 1 second sleep.
         await asyncio.sleep(1)
 
 
