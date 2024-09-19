@@ -104,13 +104,13 @@
             const { type, username, room, description, candidate } = data;
 
             if (
-              type === "user_joined" &&
+              type === "joined" &&
               username !== document.getElementById("username").value
             ) {
               createPeerConnection(username, this);
-            } else if (type === "user_joined") {
-              // ignore the message if it's from the current user
-            } else if (type === "user_left") {
+            } else if (type === "joined") {
+              // ignore the message if it's from us
+            } else if (type === "left") {
               removeRemoteVideo(username);
             } else if (type === "sdp") {
               handleSignalingMessage(data, this);

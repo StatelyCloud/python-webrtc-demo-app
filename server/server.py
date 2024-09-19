@@ -3,32 +3,36 @@
 
 import asyncio
 import json
-from websockets.asyncio.server import serve, ServerConnection
-from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
+import os
+import random
+import traceback
+import uuid
 from typing import Any
+
+from dotenv import load_dotenv
 from schema.generated import (
     Client,
     Participant,
 )
 from statelydb import (
-    key_path,
+    ListToken,
+    StatelyCode,
+    StatelyError,
     SyncChangedItem,
     SyncDeletedItem,
     SyncReset,
     SyncUpdatedItemKeyOutsideListWindow,
-    ListToken,
-    StatelyCode,
-    StatelyError,
+    key_path,
 )
-import random
-from dotenv import load_dotenv
-import os
-import uuid
-import traceback
+from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+
 
 load_dotenv(dotenv_path=".env.local")
 
-# TODO: add a heartbeat and TTL to handle zombie cnnec
+# TODO: add a heartbeat and TTL to handle zombie connections
+# that can arise from the server dying unexpectedly before we can
+# remove the participant from the room.
 client = Client(
     store_id=int(os.environ["STORE_ID"]),
 )
@@ -43,9 +47,9 @@ async def broadcast(room: str, message: str):
         # the room has been removed before the broadcast could happen
         print("received broadcast for room that doesn't exist. skipping")
         return
-    for user in subscribed_rooms[room].values():
-        # non-blocking send to each user
-        asyncio.create_task(send_to(user, message))
+    for participant in subscribed_rooms[room].values():
+        # non-blocking send to each participant
+        asyncio.create_task(send_to(participant, message))
 
 
 async def send_to(recipient: Participant, message: str):
@@ -55,19 +59,23 @@ async def send_to(recipient: Participant, message: str):
         try:
             await connection.send(message)
         except ConnectionClosedOK:
-            print(f"Connection to {recipient.username} closed. Removing user")
-            await remove_user(recipient.room, recipient.username, recipient.session_id)
+            print(f"Connection to {recipient.username} closed. Removing participant")
+            await remove_local_participant(
+                recipient.room, recipient.username, recipient.session_id
+            )
         except ConnectionClosedError:
             print(
-                f"Connection to {recipient.username} closed with error. Removing user"
+                f"Connection to {recipient.username} closed with error. Removing participant"
             )
             # delete this when we finish debugging what causes this
             # it looks like overloaded server tbh
             traceback.print_exc()
-            await remove_user(recipient.room, recipient.username, recipient.session_id)
+            await remove_local_participant(
+                recipient.room, recipient.username, recipient.session_id
+            )
 
     else:
-        # user is not connected to this instance
+        # participant is not connected to this instance
         print(f"{recipient.username} not connected to this instance")
 
 
@@ -88,10 +96,10 @@ async def load_room(room: str) -> ListToken:
     return list_resp.token
 
 
-async def add_user(
+async def add_local_participant(
     room: str, username: str, connection: ServerConnection, session_id: uuid.UUID
 ):
-    print(f"Adding user {username} to room {room}")
+    print(f"Adding participant {username} to room {room}")
     # add the connection to the connections dict
     connections[f"{username}-{session_id}"] = connection
 
@@ -108,7 +116,7 @@ async def add_user(
         token = await load_room(room)
         asyncio.create_task(subscribe_room(room, token))
 
-    # now put the new user in stately to notify other servers
+    # now put the new participant in stately to notify other subscribed server.py instances
     await client.put(
         Participant(
             room=room,
@@ -118,8 +126,8 @@ async def add_user(
     )
 
 
-async def remove_user(room: str, username: str, session_id: uuid.UUID):
-    print(f"Removing user: {username} from room {room}")
+async def remove_local_participant(room: str, username: str, session_id: uuid.UUID):
+    print(f"Removing participant: {username} from room {room}")
     # we don't need to update the local room state because the subscriber will handle that
     await client.delete(key_path(f"/Room-{room}/Participant-{username}"))
     await delete_connection(username, session_id)
@@ -161,7 +169,7 @@ async def handler(websocket: ServerConnection) -> None:
     try:
         initial_message_json = await websocket.recv()
     except ConnectionClosedOK:
-        print("User disconnected before sending initial message")
+        print("participant disconnected before sending initial message")
         return
 
     # make sure we get a join message first
@@ -169,17 +177,19 @@ async def handler(websocket: ServerConnection) -> None:
 
     if initial_message["type"] != "join":
         await websocket.close()
-        print(f"initial message is not join. was {initial_message}. booting user.")
+        print(
+            f"initial message is not join. was {initial_message}. booting participant."
+        )
         return
 
-    # get the user's info and create a session ID for the socket
-    # so we can dedupe multiple connections from the same user
+    # get the participant's info and create a session ID for the socket
+    # so we can dedupe multiple connections from the same participant
     session_id = uuid.uuid4()
     username = initial_message["username"]
     room = initial_message["room"]
 
-    # add the user to the room
-    await add_user(room, username, websocket, session_id)
+    # add the participant to the room
+    await add_local_participant(room, username, websocket, session_id)
 
     try:
         # start listening for SDP messages on the socket
@@ -190,11 +200,11 @@ async def handler(websocket: ServerConnection) -> None:
                 # the connections seem to work better then we do this.
                 await handle_sdp(room, username, msg)
     except ConnectionClosedOK:
-        print(f"User {username} disconnected")
+        print(f"participant {username} disconnected")
     except Exception as e:
-        print(f"Error for user {username}: {e}")
+        print(f"Error for participant {username}: {e}")
     finally:
-        await remove_user(room, username, session_id)
+        await remove_local_participant(room, username, session_id)
 
 
 async def delete_connection(username: str, session_id: uuid.UUID):
@@ -203,75 +213,79 @@ async def delete_connection(username: str, session_id: uuid.UUID):
         del connections[f"{username}-{session_id}"]
 
 
+async def handle_changed_remote_participant(room: str, updated: Participant):
+    old = subscribed_rooms[room].get(updated.username, None)
+    if old is None:
+        # participant added to room. we need to to notify everyone else
+        await broadcast(
+            room,
+            json.dumps({"type": "joined", "username": updated.username}),
+        )
+    elif updated.session_id != old.session_id:
+        # if the session id is different, we need to close the old connection
+        await delete_connection(old.username, old.session_id)
+    else:
+        # updated offer/answer. we need to propagate to the participant
+        # if they are connected to us.
+        if f"{updated.username}-{updated.session_id}" in connections:
+            txn = None
+            while txn is None or txn.result is None or not txn.result.committed:
+                try:
+                    txn = await client.transaction()
+                    sdp_to_send = []
+                    async with txn:
+                        # transactionally clear the participant SDP queue
+                        # if we don't do it in a transaction its possible someone
+                        # added SDP after the sync but before here which will get lost
+                        # when we clear the queue since the queue will be empty before
+                        # the next sync.
+                        txn_current = await txn.get(Participant, updated.key_path())
+                        if txn_current is None:
+                            # the participant doesn't exist anymore.
+                            # break the loop and keep reading sync updates
+                            break
+                        sdp_to_send = txn_current.pending_sdp
+                        txn_current.pending_sdp = []
+                        await txn.put(txn_current)
+                    if txn.result is not None and txn.result.committed:
+                        for sdp in sdp_to_send:
+                            print(f"Sending pending sdp to {updated.username}")
+                            await send_to(updated, sdp)
+                except StatelyError as e:
+                    if e.stately_code == StatelyCode.CONCURRENT_MODIFICATION:
+                        await asyncio.sleep(random.uniform(1, 2))
+                        continue
+                    raise e
+    # regardless, we need to update the room state
+    subscribed_rooms[room][updated.username] = updated
+
+
+async def handle_removed_remote_participant(room: str, username: str):
+    print(f"sync detected delete participant: {username}")
+    del subscribed_rooms[room][username]
+    await broadcast(
+        room,
+        json.dumps({"type": "left", "username": username}),
+    )
+
+
 async def sync_room(room: str, token: ListToken) -> ListToken:
     sync_resp = await client.sync_list(token)
     async for item in sync_resp:
         if isinstance(item, SyncChangedItem):
-            # user added to room or updated offer/answer
-            current = item.item
-            if not isinstance(current, Participant):
-                raise Exception(f"Unexpected item type: {current}")
-
-            old = subscribed_rooms[room].get(current.username, None)
-            if old is None:
-                # user added to room. we need to to notify everyone else
-                await broadcast(
-                    room,
-                    json.dumps({"type": "user_joined", "username": current.username}),
-                )
-            elif current.session_id != old.session_id:
-                # if the session id is different, we need to close the old connection
-                await delete_connection(old.username, old.session_id)
-            else:
-                # updated offer/answer. we need to propagate to the user
-                # if they are connected to us.
-                if f"{current.username}-{current.session_id}" in connections:
-                    txn = None
-                    while txn is None or txn.result is None or not txn.result.committed:
-                        try:
-                            txn = await client.transaction()
-                            sdp_to_send = []
-                            async with txn:
-                                # transactionally clear the user SDP queue
-                                # if we don't do it in a transaction its possible someone
-                                # added SDP after the sync but before here which will get lost
-                                # when we clear the queue since the queue will be empty before
-                                # the next sync.
-                                txn_current = await txn.get(
-                                    Participant, current.key_path()
-                                )
-                                if txn_current is None:
-                                    # the user doesn't exist anymore.
-                                    # break the loop and keep reading sync updates
-                                    break
-                                sdp_to_send = txn_current.pending_sdp
-                                txn_current.pending_sdp = []
-                                await txn.put(txn_current)
-                            if txn.result is not None and txn.result.committed:
-                                for sdp in sdp_to_send:
-                                    print(f"Sending pending sdp to {current.username}")
-                                    await send_to(current, sdp)
-                        except StatelyError as e:
-                            if e.stately_code == StatelyCode.CONCURRENT_MODIFICATION:
-                                await asyncio.sleep(random.uniform(1, 2))
-                                continue
-                            raise e
-            # regardless, we need to update the room state
-            subscribed_rooms[room][current.username] = current
+            # participant added to room or updated offer/answer
+            if not isinstance(item.item, Participant):
+                raise Exception(f"Unexpected item type: {item.item}")
+            await handle_changed_remote_participant(room, item.item)
 
         elif isinstance(item, SyncDeletedItem) or isinstance(
             item, SyncUpdatedItemKeyOutsideListWindow
         ):
             deleted_username = item.key_path.removeprefix(f"/Room-{room}/Participant-")
-            print(f"sync detected delete user: {deleted_username}")
-            del subscribed_rooms[room][deleted_username]
-            await broadcast(
-                room,
-                json.dumps({"type": "user_left", "username": deleted_username}),
-            )
+            await handle_removed_remote_participant(room, deleted_username)
 
         elif isinstance(item, SyncReset):
-            raise Exception("SyncReset is not implemented")
+            subscribed_rooms[room] = {}
 
     if sync_resp.token is None:
         raise Exception("Sync token is None")
@@ -284,10 +298,10 @@ async def subscribe_room(room: str, token: ListToken) -> None:
     while token.can_sync:
         token = await sync_room(room, token)
         print(
-            f"Syncing room {room} success. Current users: {",".join(subscribed_rooms[room].keys())}"
+            f"Syncing room {room} success. Current participants: {",".join(subscribed_rooms[room].keys())}"
         )
         if len(subscribed_rooms[room]) == 0:
-            print(f"No users in room {room}. Exiting")
+            print(f"No participants in room {room}. Exiting")
             del subscribed_rooms[room]
             return
         # wait 1 sec then loop again
