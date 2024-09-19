@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 """
-This is a simple signaling server for WebRTC. It uses StatelyDB to store the state of the rooms and participants.
+This is a simple signaling server for WebRTC.
+It uses StatelyDB to store the state of the rooms and participants.
 
 TODO: add a heartbeat and TTL to handle zombie connections
 that can arise from the server dying unexpectedly before we can
-emove the participant from the room.
+remove the participant from the room.
 """
 
 import asyncio

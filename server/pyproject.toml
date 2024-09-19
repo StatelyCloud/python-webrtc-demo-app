@@ -1,7 +1,7 @@
 [project]
 name = "python-webrtc-demo-app"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple WebRTC demo app using Python and StatelyDB"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,6 +11,4 @@ dependencies = [
 ]
 
 [tool.uv]
-dev-dependencies = [
-    "ruff>=0.6.4",
-]
+dev-dependencies = ["ruff>=0.6.4"]
