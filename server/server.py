@@ -28,12 +28,7 @@ import traceback
 
 load_dotenv(dotenv_path=".env.local")
 
-## TODO:
-## - cancel room listener when required
-## - handle duplicate connections
-## - handle room race conditions
-## - try and do more stuff in parallel
-
+# TODO: add a heartbeat and TTL to handle zombie cnnec
 client = Client(
     store_id=int(os.environ["STORE_ID"]),
 )
@@ -44,6 +39,10 @@ subscribed_rooms: dict[str, dict[str, Participant]] = {}
 
 
 async def broadcast(room: str, message: str):
+    if room not in subscribed_rooms:
+        # the room has been removed before the broadcast could happen
+        print("received broadcast for room that doesn't exist. skipping")
+        return
     for user in subscribed_rooms[room].values():
         # non-blocking send to each user
         asyncio.create_task(send_to(user, message))
@@ -72,29 +71,21 @@ async def send_to(recipient: Participant, message: str):
         print(f"{recipient.username} not connected to this instance")
 
 
-async def populate_room(room: str) -> ListToken:
+async def load_room(room: str) -> ListToken:
     # build the initial state and return a sync token
-    token: ListToken | None = None
-    while token is None or token.can_continue:
-        list_resp = await client.begin_list(
-            key_path_prefix=key_path("/Room-{room}", room=room)
-        )
+    list_resp = await client.begin_list(
+        key_path_prefix=key_path("/Room-{room}", room=room)
+    )
 
-        async for item in list_resp:
-            if isinstance(item, Participant):
-                subscribed_rooms[room][item.username] = item
-            else:
-                raise Exception(f"Unexpected item type: {item}")
-        token = list_resp.token
-        if token is None:
-            raise Exception("Token is None")
-        elif token.can_continue:
-            list_resp = await client.continue_list(token)
-        elif token.can_sync:
-            return token
+    async for item in list_resp:
+        if isinstance(item, Participant):
+            subscribed_rooms[room][item.username] = item
+        else:
+            raise Exception(f"Unexpected item type: {item}")
 
-    # get here if token cant sync or continue which is a stately bug
-    raise Exception("Token is in invalid state. Cannot sync or continue")
+    if list_resp.token is None:
+        raise Exception("Token is None")
+    return list_resp.token
 
 
 async def add_user(
@@ -114,7 +105,7 @@ async def add_user(
         subscribed_rooms[room] = {
             username: Participant(room=room, username=username, session_id=session_id)
         }
-        token = await populate_room(room)
+        token = await load_room(room)
         asyncio.create_task(subscribe_room(room, token))
 
     # now put the new user in stately to notify other servers
@@ -129,13 +120,9 @@ async def add_user(
 
 async def remove_user(room: str, username: str, session_id: uuid.UUID):
     print(f"Removing user: {username} from room {room}")
-    # we don't need to update the local room stately because the subscriber will handle that
+    # we don't need to update the local room state because the subscriber will handle that
     await client.delete(key_path(f"/Room-{room}/Participant-{username}"))
-    if f"{username}-{session_id}" not in connections:
-        print(f"User {username}-{session_id} not connected. expected connection")
-        return
-    await connections[f"{username}-{session_id}"].close()
-    print(f"User {username} removed from room {room}")
+    await delete_connection(username, session_id)
 
 
 async def handle_sdp(room: str, username: str, msg: dict[str, Any]):
@@ -200,6 +187,7 @@ async def handler(websocket: ServerConnection) -> None:
             msg = json.loads(msg_json)
             if msg["type"] == "sdp":
                 # block on this so the SDP is applied in order
+                # the connections seem to work better then we do this.
                 await handle_sdp(room, username, msg)
     except ConnectionClosedOK:
         print(f"User {username} disconnected")
@@ -227,13 +215,9 @@ async def sync_room(room: str, token: ListToken) -> ListToken:
             old = subscribed_rooms[room].get(current.username, None)
             if old is None:
                 # user added to room. we need to to notify everyone else
-                asyncio.create_task(
-                    broadcast(
-                        room,
-                        json.dumps(
-                            {"type": "user_joined", "username": current.username}
-                        ),
-                    )
+                await broadcast(
+                    room,
+                    json.dumps({"type": "user_joined", "username": current.username}),
                 )
             elif current.session_id != old.session_id:
                 # if the session id is different, we need to close the old connection
@@ -281,11 +265,9 @@ async def sync_room(room: str, token: ListToken) -> ListToken:
             deleted_username = item.key_path.removeprefix(f"/Room-{room}/Participant-")
             print(f"sync detected delete user: {deleted_username}")
             del subscribed_rooms[room][deleted_username]
-            asyncio.create_task(
-                broadcast(
-                    room,
-                    json.dumps({"type": "user_left", "username": deleted_username}),
-                )
+            await broadcast(
+                room,
+                json.dumps({"type": "user_left", "username": deleted_username}),
             )
 
         elif isinstance(item, SyncReset):
@@ -306,6 +288,7 @@ async def subscribe_room(room: str, token: ListToken) -> None:
         )
         if len(subscribed_rooms[room]) == 0:
             print(f"No users in room {room}. Exiting")
+            del subscribed_rooms[room]
             return
         # wait 1 sec then loop again
         await asyncio.sleep(1)

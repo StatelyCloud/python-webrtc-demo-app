@@ -30,7 +30,8 @@
         display: flex;
         overflow-x: auto;
         white-space: nowrap;
-        height: 50vh;
+        height: 50%;
+        max-height: 300px;
         width: 100%;
       }
 
@@ -202,7 +203,6 @@
         };
 
         peerConnection.onicecandidate = (event) => {
-          console.log("ice candidate for ", peerId);
           if (event.candidate) {
             ws?.send(
               JSON.stringify({
@@ -283,7 +283,6 @@
           videoElement.parentNode.removeChild(videoElement);
         }
         peerConnections.delete(peerId);
-        console.log("Removed remote video for ", peerId);
       }
     </script>
   </body>
